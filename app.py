@@ -1,15 +1,26 @@
-import csv
+﻿import csv
 import io
 import re
+from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 
 
 PHONE_COLUMN = "phone"
+PHONE_COLUMN_KEYWORDS = ("telefon", "phone", "gsm", "cep", "mobile", "tel")
+EXCEL_EXTENSIONS = {".xlsx", ".xls", ".xlsm"}
+TEXT_EXTENSIONS = {".txt", ".csv"}
 
 
-def normalize_phone(raw_value: str):
-    digits = re.sub(r"\D", "", raw_value)
+def normalize_phone(raw_value):
+    if raw_value is None or pd.isna(raw_value):
+        return None
+
+    digits = re.sub(r"\D", "", str(raw_value))
+
+    if digits.endswith("0") and re.search(r"\.0$", str(raw_value).strip()):
+        digits = digits[:-1]
 
     if digits.startswith("0090"):
         digits = digits[4:]
@@ -18,24 +29,69 @@ def normalize_phone(raw_value: str):
     elif digits.startswith("0"):
         digits = digits[1:]
 
-    if len(digits) != 10:
+    if len(digits) != 10 or not digits.startswith("5"):
         return None
 
     return f"+90{digits}"
 
 
-def extract_phone_numbers(text: str):
-    candidates = re.findall(r"(?:\+|00)?\d[\d\s()./-]{8,}\d", text)
+def extract_phone_numbers_from_values(values):
     unique_numbers = []
     seen = set()
 
-    for candidate in candidates:
-        phone = normalize_phone(candidate)
-        if phone and phone not in seen:
-            seen.add(phone)
-            unique_numbers.append(phone)
+    for value in values:
+        for candidate in re.findall(r"(?:\+|00)?\d[\d\s()./-]{8,}\d", str(value)):
+            phone = normalize_phone(candidate)
+            if phone and phone not in seen:
+                seen.add(phone)
+                unique_numbers.append(phone)
 
     return unique_numbers
+
+
+def extract_phone_numbers(text: str):
+    return extract_phone_numbers_from_values([text])
+
+
+def find_phone_columns(dataframe):
+    matched_columns = []
+
+    for column in dataframe.columns:
+        normalized_name = str(column).strip().casefold()
+        if any(keyword in normalized_name for keyword in PHONE_COLUMN_KEYWORDS):
+            matched_columns.append(column)
+
+    return matched_columns
+
+
+def extract_phone_numbers_from_excel(file_bytes: bytes, extension: str):
+    engine = "xlrd" if extension == ".xls" else "openpyxl"
+    sheets = pd.read_excel(
+        io.BytesIO(file_bytes),
+        sheet_name=None,
+        dtype=str,
+        engine=engine,
+    )
+    values = []
+
+    for dataframe in sheets.values():
+        phone_columns = find_phone_columns(dataframe)
+        source_columns = phone_columns or dataframe.columns
+
+        for column in source_columns:
+            values.extend(dataframe[column].dropna().tolist())
+
+    return extract_phone_numbers_from_values(values)
+
+
+def extract_phone_numbers_from_upload(uploaded_file):
+    file_bytes = uploaded_file.getvalue()
+    extension = Path(uploaded_file.name).suffix.casefold()
+
+    if extension in EXCEL_EXTENSIONS:
+        return extract_phone_numbers_from_excel(file_bytes, extension)
+
+    return extract_phone_numbers(decode_file(file_bytes))
 
 
 def convert_to_csv(numbers: list[str]) -> bytes:
@@ -318,17 +374,17 @@ st.markdown(
             <span class="dot red"></span>
             <span class="dot yellow"></span>
             <span class="dot green"></span>
-            <span>alperen-son-kez-anlatıyorum.exe</span>
+            <span>alperen-artık-excel-de-atıyor.exe</span>
         </div>
         <div class="hero">
-            <div class="warning-pill">ALPEREN BENİ ARTIK SAL, BU SİTE TAMAMEN SENİN İÇİN</div>
-            <h1>Numarayı yükle. CSV'yi indir. Kimseyi darlama.</h1>
-            <p>Bu kadar. Dosyadaki numaraları bulur, başına +90 koyar, tekrar edenleri siler ve sütun adını <strong>phone</strong> yapar.</p>
+            <div class="warning-pill">ALPEREN, BAK BU BUTONA BASINCA OLUYOR</div>
+            <h1>Artık numara ayıklamak için insan çağırmıyoruz.</h1>
+            <p>Alperen dosyayı yüklüyor, site telefon sütununu buluyor, 0212/0216 gibi sabit hatları ayıklıyor, sadece 05xx cep numaralarını <strong>+90</strong> formatında <strong>phone</strong> CSV'sine çeviriyor. Bu kadar, gerçekten bu kadar.</p>
         </div>
         <div class="howto">
-            <div class="step"><div class="step-num">1</div><div><strong>TXT veya CSV dosyasını aşağıya bırak.</strong><span>WhatsApp'tan, not defterinden, karışık listeden gelmesi sorun değil.</span></div></div>
-            <div class="step"><div class="step-num">2</div><div><strong>Site numaraları toparlasın.</strong><span>0, 90, +90 ve 0090 ile başlayan Türkiye numaralarını +90 formatına çevirir.</span></div></div>
-            <div class="step"><div class="step-num">3</div><div><strong>CSV indir ve huzurla uzaklaş.</strong><span>Tekrarlı numaralar temizlenir. Çıkan dosyada tek kolon vardır: phone.</span></div></div>
+            <div class="step"><div class="step-num">1</div><div><strong>TXT, CSV veya Excel dosyasını aşağıya bırak.</strong><span>Excel'de bir sürü kolon varsa sorun değil; telefon, gsm, cep, phone gibi sütunları bulmaya çalışır.</span></div></div>
+            <div class="step"><div class="step-num">2</div><div><strong>Site sadece cep numaralarını toplasın.</strong><span>0530 gibi mobil numaralar kalır. 0212 / 0216 gibi sabit hatlar listeye alınmaz.</span></div></div>
+            <div class="step"><div class="step-num">3</div><div><strong>CSV indir ve kimseyi tekrar yorma.</strong><span>Tekrarlı numaralar temizlenir. Çıkan dosyada tek kolon vardır: phone.</span></div></div>
         </div>
     </section>
     """,
@@ -339,22 +395,25 @@ st.markdown(
     """
     <div class="upload-title">
         <div>Dosyayı buraya yükle</div>
-        <span>TXT veya CSV</span>
+        <span>TXT, CSV, XLSX, XLS veya XLSM</span>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
 uploaded_file = st.file_uploader(
-    "Metin belgesi yükle",
-    type=["txt", "csv"],
+    "Metin veya Excel belgesi yükle",
+    type=["txt", "csv", "xlsx", "xls", "xlsm"],
     accept_multiple_files=False,
     label_visibility="collapsed",
 )
 
 if uploaded_file:
-    raw_text = decode_file(uploaded_file.getvalue())
-    numbers = extract_phone_numbers(raw_text)
+    try:
+        numbers = extract_phone_numbers_from_upload(uploaded_file)
+    except Exception as error:
+        st.error(f"Dosya okunamadı. Alperen, dosya gerçekten Excel/TXT/CSV mi? Detay: {error}")
+        numbers = []
 
     st.markdown(
         """
@@ -365,7 +424,7 @@ if uploaded_file:
         """,
         unsafe_allow_html=True,
     )
-    st.metric("Bulunan tekil numara", len(numbers))
+    st.metric("Bulunan tekil cep numarası", len(numbers))
 
     if numbers:
         st.dataframe([{PHONE_COLUMN: number} for number in numbers], use_container_width=True)
@@ -376,14 +435,13 @@ if uploaded_file:
             mime="text/csv",
         )
     else:
-        st.warning("Geçerli telefon numarası bulunamadı. Alperen, dosyada numara olduğundan emin miyiz?")
+        st.warning("Geçerli cep telefonu numarası bulunamadı. Sabit hatları özellikle almıyorum, haberin olsun Alperen.")
 else:
     st.markdown(
         """
         <div class="empty-note">
-            <strong>Özet:</strong> Dosyayı yükle. Site numaraları <strong>+90</strong> formatına çevirsin, tekrarları silsin, <strong>phone</strong> sütunlu CSV versin. Bütün operasyon bu.
+            <strong>Özet:</strong> TXT, CSV veya Excel yükle. Sistem Excel'de telefon sütununu bulur, sadece <strong>05xx</strong> cep numaralarını bırakır, sabit hatları ve tekrarları siler, <strong>phone</strong> sütunlu CSV verir. Olay bu.
         </div>
         """,
         unsafe_allow_html=True,
     )
-
